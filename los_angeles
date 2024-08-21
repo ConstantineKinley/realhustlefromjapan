@@ -1,0 +1,80 @@
+#!/bin/bash
+
+function showdlg {
+	msg="${1//\./.\\n}"
+	msg="\n<span font='SB Sans Text 12'>${msg%\n}</span>\n"
+	yad --title "Смена пароля" --width=600 --borders=10 --sticky --fixed --on-top --center --text-align=center --text="$msg" 
+}
+
+function onerrorresult {
+	showdlg "$1"
+	$0
+}
+
+if [ ! -z $DEBUG ]; then
+    set -x
+    exec 1> /tmp/changepassword.log 2>&1
+fi
+
+set -e
+set +H
+
+SEP='-<>-'
+
+pwdata=$(\
+	yad --title="Смена пароля для $(whoami)" \
+	--height=200 --width=400 --sticky --fixed --on-top --center --borders=10 --form --skip-taskbar \
+	--separator="$SEP" --item-separator="$SEP" --text-align=center \
+	--form \
+		--field="<span font='SB Sans Text 12'>Старый пароль: </span>:H" \
+		--field="<span font='SB Sans Text 12'>Новый пароль: </span>:H" \
+		--field="<span font='SB Sans Text 12'>Повторите новый пароль: </span>:H" \
+	| sed "s/$SEP/\n/g")
+
+[ -z "$pwdata" ] && exit 1
+
+readarray -t arr <<< "$pwdata"
+
+if [ "x${arr[1]}" == "x${arr[2]}" ]; then
+	if [ "x${arr[0]}" == "x${arr[1]}" ]; then
+		onerrorresult "<b>Новый пароль совпадает с текущим!</b>"
+	else
+        if [ $EUID != 0 ]; then
+		    set +e
+		    res=$(expect 2>/dev/null <<END_EXPECT
+		    spawn bash -c "passwd $USER"
+		    expect "Changing password for andrey."
+            expect "Current password:"
+		    send "${arr[0]/$/\\$}\r"
+		    expect "New password: "
+		    send "${arr[1]/$/\\$}\r"
+		    expect "Retype new password: "
+		    send "${arr[1]/$/\\$}\r"
+		    expect eof
+END_EXPECT
+		cat 2>/dev/null <- | xargs -I{} echo "{}\\n" | sed "s/^ //")
+        else
+		    set +e
+		    res=$(expect 2>/dev/null <<END_EXPECT
+		    spawn bash -c "passwd $USER"
+		    expect "New password: "
+		    send "${arr[1]/$/\\$}\r"
+		    expect "Retype new password: "
+		    send "${arr[1]/$/\\$}\r"
+		    expect eof
+END_EXPECT
+		cat 2>/dev/null <- | xargs -I{} echo "{}\\n" | sed "s/^ //")
+        fi
+		set -e
+		res=${res%?}
+		passwdres=$(cat <<<"${res}" | tail -1 | sed 's/\n//g')
+		[[ -z $passwdres ]] && passwdres=$(cat <<<"${res}" | tail -2 | head -1 | sed 's/\n//g')
+		if [[ "$passwdres" == "passwd: password updated successfully"* ]]; then
+			showdlg "<b>Пароль успешно изменен!</b>"
+		else
+			onerrorresult "<b>Ошибка смены пароля!</b> \n\n${kpasswdres}"
+		fi
+	fi
+else
+	onerrorresult "<b>Пароли не совпадают!</b>"
+fi
